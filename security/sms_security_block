@@ -1,0 +1,67 @@
+# 短信告警拦截系统业务流程
+
+## 1. 背景
+
+短信告警拦截系统用于应对 **短信异常放量、验证率异常下降等风险场景**。  
+通过 **告警触发 → 短信流水回溯 → 安全分析 → 实时拦截** 的闭环机制，快速控制风险并降低短信成本。
+
+---
+
+## 2. 系统角色
+
+- **棱镜告警平台**：监控短信异常，生成并推送告警  
+- **WarJava**：告警中转与分发服务  
+- **ImoAlert**：解析告警并路由到对应处理逻辑  
+- **SMSSearch / ElasticSMS**：短信流水存储与查询，支撑回溯分析  
+- **安全组**：分析短信流水，制定处罚策略  
+- **SMSDetector**：短信发送前的实时策略校验与拦截  
+- **登录 / 注册服务**：短信发送入口，接收策略校验结果并执行拦截或正常发送  
+
+
+---
+
+## 3. 总体流程
+
+```mermaid
+sequenceDiagram
+    participant User as 用户
+    participant Prism as 棱镜告警平台
+    participant WarJava as WarJava
+    participant Alert as ImoAlert
+    participant Search as SMSSearch
+    participant ES as ElasticSMS
+    participant Sec as 安全组
+    participant Manager as SMSManager
+    participant Detector as SMSDetector
+    participant Biz as 登录/注册服务
+
+    Note over User,Prism: 告警触发阶段
+    User->>Prism: 异常行为触发告警
+    Prism->>WarJava: HTTP 推送告警
+    WarJava->>Alert: 告警中转
+
+    Note over Alert,ES: 短信流水回溯
+    Alert->>Search: 按告警条件查询短信流水
+    Search->>ES: 检索短信流水
+    ES-->>Search: 返回流水
+    Search-->>Alert: 汇总查询结果
+    Alert->>Sec: 推送告警相关短信上下文
+
+    Note over Sec,Detector: 策略下发与生效
+    Sec->>Manager: 下发处罚策略
+    Manager->>Detector: 转发处罚策略
+    Detector->>Detector: 策略入库 / 更新策略池 / 删除策略
+
+    Note over Biz,User: 短信请求拦截
+    Biz->>Detector: 短信请求前策略校验
+    Detector-->>Biz: 返回是否命中
+    Biz-->>User: 命中则拦截并走兜底流程
+
+```
+## 4. 核心逻辑与关键说明
+
+- 所有短信 **发送 / 校验请求** 均会写入 `ElasticSMS`，供告警回溯与分析使用  
+- 告警发生后，系统根据告警条件回溯相关短信流水，安全组分析后下发 **处罚策略**  
+- 处罚策略生效 **异步执行**：策略请求成功后，对后续短信请求生效，拦截未来可能的异常量  
+- 用户侧表现：命中策略时，短信请求失败并进入兜底流程  
+- 核心目标：**快速止损，防止风险扩散，同时不影响已发送的短信**
